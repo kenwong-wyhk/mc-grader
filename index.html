@@ -58,6 +58,8 @@
     .bar { color: var(--ink-muted); font-weight: 400; margin: 0 4px; }
     .step-actions { display: grid; gap: 8px; margin-top: 12px; }
     .step-note { margin: 8px 0 0; font-size: 13px; }
+    .check-reasons { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; font-size: 12.5px; }
+    .check-reasons:empty { display: none; }
 
     label { display: block; font-size: 12.5px; font-weight: 500; margin: 10px 0 4px; }
     .check { display: flex; align-items: flex-start; gap: 8px; font-weight: 400; font-size: 13px; margin: 8px 0 0; }
@@ -329,8 +331,16 @@
       <p class="hint">Drop the reference here. Its key is read automatically; you can also type it under <em>Alignment &amp; key</em>.</p>
     </section>
 
+    <section class="step" id="stepList">
+      <h2>2<span class="bar">|</span>Class list <span class="bar">(optional)</span></h2>
+      <label for="rosterText">Paste your class list</label>
+      <textarea id="rosterText" rows="3" aria-describedby="rosterHint" placeholder="Class, Class Num, Student ID, English Name&#10;6K, 23, 23978, Sam Wong"></textarea>
+      <p class="step-note" id="rosterNote" role="status" hidden></p>
+      <p class="hint" id="rosterHint">Copy it from Google Sheets or Excel with its heading row. Names are filled in, sheets that disagree with it are marked, and absent students are listed. It is remembered in this browser on this computer; empty the box to forget it.</p>
+    </section>
+
     <section class="step" id="stepSheets">
-      <h2>2<span class="bar">|</span>Student sheets</h2>
+      <h2>3<span class="bar">|</span>Student sheets</h2>
       <label for="stuInput">Scans (images, a multi-page PDF, or drop a folder)</label>
       <input type="file" id="stuInput" accept="image/*,.pdf" multiple />
       <div class="progress" id="stuProgress" hidden><progress max="1" value="0" aria-labelledby="stuProgressText"></progress><span id="stuProgressText"></span></div>
@@ -340,15 +350,16 @@
     </section>
 
     <section class="step">
-      <h2>3<span class="bar">|</span>Check</h2>
+      <h2>4<span class="bar">|</span>Check</h2>
       <p class="step-note" id="checkSummary" style="margin-top:0">Sheets are graded as soon as the key and the scans are loaded.</p>
+      <ul class="check-reasons" id="checkReasons"></ul>
       <div class="step-actions">
         <button class="btn" id="btnReviewFlagged" disabled onclick="reviewFlagged()">Review sheets that need checking</button>
       </div>
     </section>
 
     <section class="step">
-      <h2>4<span class="bar">|</span>Export</h2>
+      <h2>5<span class="bar">|</span>Export</h2>
       <div class="step-actions">
         <button class="btn btn-outline" id="btnExportXlsx" disabled onclick="exportExcel()">Excel results (.xlsx)</button>
         <button class="btn btn-outline" id="btnExportZip" disabled onclick="exportMarkedZip()">Marked sheets (.zip)</button>
@@ -362,13 +373,6 @@
       </select>
       <label class="check"><input type="checkbox" id="lowercaseWrong" checked /> Excel: wrong answers in lowercase</label>
     </section>
-
-    <details class="step">
-      <summary>Class roster (optional)</summary>
-      <label for="rosterText" class="hint" style="margin-top:0;font-weight:400">Copy your class list from Google Sheets or Excel, heading row included, and paste it here. Student ID, Class (such as 6H), Class No and name columns are found by their headings; other columns are ignored. Sheets whose class does not match the list are marked for checking.</label>
-      <textarea id="rosterText" rows="4" placeholder="Class, Class Num, Student ID, English Name&#10;6K, 23, 23978, Sam Wong&#10;6K, 20, 23962, Glen Tse"></textarea>
-      <button class="btn btn-outline" style="width:100%;margin-top:6px" onclick="applyRoster()">Apply roster</button>
-    </details>
 
     <details class="step">
       <summary>Reading settings</summary>
@@ -420,7 +424,7 @@
         <label for="sortMode" style="margin:0;font-weight:400;color:var(--ink-muted)">Sort</label>
         <select id="sortMode" onchange="applySort(); renderTable(); populateStudentDropdown(); saveSettings(); scheduleSave()">
           <option value="file">Scan order</option>
-          <option value="class">Class and number</option>
+          <option value="class" selected>Class and number</option>
           <option value="score">Score, highest first</option>
           <option value="id">Student ID</option>
         </select>
@@ -606,7 +610,8 @@
   const tell = (title, body) => ask({ title, body, buttons: [{ label: 'OK', value: 'ok', style: '', focus: true }] });
 
   // ---------- SETTINGS: remembered between visits, like the box layout ----------
-  const SETTING_IDS = ['numQuestions', 'threshSlider', 'zipNaming', 'lowercaseWrong', 'autoDeskew', 'readIdOmr', 'showCorrectCircle', 'sortMode', 'keysOn'];
+  // rosterText: the class list is kept too, so it is pasted once rather than for every test
+  const SETTING_IDS = ['numQuestions', 'threshSlider', 'zipNaming', 'lowercaseWrong', 'autoDeskew', 'readIdOmr', 'showCorrectCircle', 'sortMode', 'keysOn', 'rosterText'];
   function loadSettings() {
     let s = null;
     try { s = JSON.parse(localStorage.getItem('wyhk_mc_settings_v1')); } catch {}
@@ -669,16 +674,16 @@
     const p = [];
     if (stu.alignFailed) p.push(['Not aligned', 'Corner markers not found: answers may be misread']);
     if (document.getElementById('readIdOmr').checked) {
-      if (!idKnown(stu)) p.push(['ID?', 'Student ID missing or unreadable']);
-      if (!classKnown(stu)) p.push(['Class?', 'Class or Class No missing or unreadable']);
+      if (!idKnown(stu)) p.push(['ID unreadable', 'Student ID missing or unreadable']);
+      if (!classKnown(stu)) p.push(['Class unreadable', 'Class or Class No missing or unreadable']);
     }
     // Typed or roster values can collide too, so these run even when the ID bubbles are not read
     const d = duplicates();
     const sameId = idKnown(stu) && otherNames(d.byId.get(stu.studId), stu);
-    if (sameId) p.push(['ID dup', `Same Student ID as ${sameId}`]);
+    if (sameId) p.push(['Duplicate ID', `Same Student ID as ${sameId}`]);
     const sameClass = classKnown(stu) && otherNames(d.byClass.get(classKey(stu)), stu);
-    if (sameClass) p.push(['Class+No dup', `Same Form, Class and Class No as ${sameClass}`]);
-    if (stu.rosterNote) p.push(['Roster?', stu.rosterNote]);
+    if (sameClass) p.push(['Duplicate class no.', `Same Form, Class and Class No as ${sameClass}`]);
+    if (stu.rosterNote) p.push(['List mismatch', stu.rosterNote]);
     return p;
   }
   const needsCheck = stu => sheetProblems(stu).length > 0;
@@ -1484,18 +1489,53 @@
 
   function updateCheckStep() {
     const n = studentItems.length;
+    const graded = n && hasKey();
     let flagged = 0, text;
+    const reasons = new Map(); // short label → [how many sheets, the first of them]
     if (!n) text = 'Sheets are graded as soon as the key and the scans are loaded.';
-    else if (!hasKey()) text = `${n} sheet${n === 1 ? '' : 's'} loaded. Add the answer key to grade them.`;
+    else if (!graded) text = `${n} sheet${n === 1 ? '' : 's'} loaded. Add the answer key to grade them.`;
     else {
-      flagged = studentItems.filter(needsCheck).length;
-      text = `${n} sheet${n === 1 ? '' : 's'} graded. ${flagged ? `${flagged} need${flagged === 1 ? 's' : ''} checking.` : 'None need checking.'}`;
+      for (const s of studentItems) {
+        const p = sheetProblems(s);
+        if (p.length) flagged++;
+        for (const [label] of p) { const r = reasons.get(label); if (r) r[0]++; else reasons.set(label, [1, s]); }
+      }
+      text = `${n} sheet${n === 1 ? '' : 's'} graded. ${flagged ? `${flagged} need${flagged === 1 ? 's' : ''} checking:` : 'None need checking.'}`;
       const m = missingKeys();
       if (m.length) text += ` The key has no answer for ${m.join(', ')}.`;
     }
     document.getElementById('checkSummary').textContent = text;
+    // One line per reason, each opening the first sheet with it; then who is absent
+    const lines = [...reasons].map(([label, [count, first]]) => {
+      const li = document.createElement('li'), b = document.createElement('button');
+      b.type = 'button'; b.className = 'btn-link'; b.textContent = `${label} (${count})`;
+      b.onclick = () => { const i = studentItems.indexOf(first); if (i >= 0) { switchTab('marked'); selectStudent(i); } };
+      li.append(b);
+      return li;
+    });
+    const absent = graded ? absentStudents() : [];
+    if (absent.length) {
+      const li = document.createElement('li');
+      li.textContent = `Absent (${absent.length}): ${absent.slice(0, 5).map(e => `${e.form}${e.cls} ${e.no} ${e.name}`).join(' · ')}`
+        + (absent.length > 5 ? ` and ${absent.length - 5} more, listed on the Results tab` : '');
+      lines.push(li);
+    }
+    document.getElementById('checkReasons').replaceChildren(...lines);
     document.getElementById('btnReviewFlagged').disabled = !flagged;
     document.getElementById('filterLabel').textContent = `Only sheets that need checking (${flagged})`;
+    updateRosterNote(graded, absent);
+  }
+
+  // Under the class list: what it matched, or why it could not be read
+  function updateRosterNote(graded, absent) {
+    const el = document.getElementById('rosterNote');
+    const r = parseRoster();
+    el.hidden = !r;
+    if (!r) return;
+    el.className = r.problem ? 'hint warn' : 'step-note';
+    const matched = studentItems.filter(s => s.rosterMatched).length, odd = studentItems.filter(s => s.rosterNote).length;
+    el.textContent = r.problem || `${r.byId.size} student${r.byId.size === 1 ? '' : 's'} in the list.` + (graded ? ` Matched ${matched} of ${studentItems.length} sheets`
+      + (absent.length ? ` · ${absent.length} absent` : '') + (odd ? ` · ${odd} disagree with the list` : '') + '.' : '');
   }
 
   function reviewFlagged() {
@@ -1560,7 +1600,7 @@
     const headed = col.id >= 0 && names.length;
     if (!headed && !/\d/.test(rows[0].join(''))) { // a heading row, but not one we can read
       const missing = [col.id < 0 && '"Student ID"', !names.length && 'a name'].filter(Boolean).join(' or ');
-      return { byId, byClass, problem: `Roster not used: its heading row has no ${missing} column. Name the columns Student ID, Class, Class Num and English Name (others are ignored).` };
+      return { byId, byClass, problem: `Class list not used: its heading row has no ${missing} column. Name the columns Student ID, Class, Class Num and English Name (others are ignored).` };
     }
     const entries = headed
       ? rows.slice(1).map(p => ({ id: get(p, col.id), form: get(p, col.form), cls: get(p, col.cls), no: get(p, col.no), name: names.map(i => get(p, i)).filter(Boolean).join(' ') }))
@@ -1583,12 +1623,13 @@
   const known = v => !!v && !/\?/.test(v);
   const sameValue = (a, b) => String(a).toUpperCase().replace(/^0+(?=\d)/, '') === String(b).toUpperCase().replace(/^0+(?=\d)/, '');
   const classText = s => `${s.form || '?'}${s.cls || '?'} ${s.no || '?'}`;
-  function unfillRoster(stu) { Object.assign(stu, stu.rosterFilled, stu.manualMeta); stu.rosterFilled = {}; stu.rosterNote = ''; }
+  function unfillRoster(stu) { Object.assign(stu, stu.rosterFilled, stu.manualMeta); stu.rosterFilled = {}; stu.rosterNote = ''; stu.rosterMatched = false; }
   function matchRoster(stu, r) {
     unfillRoster(stu);
     const byId = r.byId.get(stu.studId);
     const e = byId || (classKnown(stu) && r.byClass.get(classKey(stu)));
     if (!e) return false;
+    stu.rosterMatched = true;
     for (const f of ['studId', 'form', 'cls', 'no']) {
       const v = f === 'studId' ? e.id : e[f], have = f === 'studId' ? idKnown(stu) : known(stu[f]);
       if (v && !have && !(f in stu.manualMeta)) { stu.rosterFilled[f] = stu[f]; stu[f] = v; }
@@ -1596,9 +1637,9 @@
     if (e.name && !('studentName' in stu.manualMeta)) stu.studentName = e.name;
     const who = `${e.id}${e.name ? ` (${e.name})` : ''}`;
     if (byId && ['form', 'cls', 'no'].some(f => known(stu[f]) && e[f] && !sameValue(stu[f], e[f]))) {
-      stu.rosterNote = `The roster has ${who} in ${classText(e)}, but this sheet says ${classText(stu)}`;
+      stu.rosterNote = `The class list has ${who} in ${classText(e)}, but this sheet says ${classText(stu)}`;
     } else if (!byId && stu.studId !== e.id) {
-      stu.rosterNote = `The roster has ${classText(e)} as ${who}, but this sheet says Student ID ${stu.studId}`;
+      stu.rosterNote = `The class list has ${classText(e)} as ${who}, but this sheet says Student ID ${stu.studId}`;
     }
     return true;
   }
@@ -1622,7 +1663,7 @@
   function applyRoster(silent = false, only = null) {
     const r = parseRoster();
     if (!r) { // an emptied box: undo what the roster filled in and flagged (names stay)
-      if (!silent) { studentItems.forEach(unfillRoster); recomputeAllScores(); scheduleSave(); setStatus('Roster cleared'); }
+      if (!silent) { studentItems.forEach(unfillRoster); recomputeAllScores(); scheduleSave(); setStatus('Class list cleared'); }
       return;
     }
     let matched = 0;
@@ -1630,7 +1671,7 @@
     if (!silent) {
       recomputeAllScores(); scheduleSave();
       const odd = studentItems.filter(s => s.rosterNote).length;
-      setStatus(r.problem || `Roster matched ${matched} student(s)${odd ? `. ${odd} disagree${odd === 1 ? 's' : ''} with the roster: see the Check column` : ''}`);
+      setStatus(r.problem || `Class list matched ${matched} sheet${matched === 1 ? '' : 's'}${odd ? `. ${odd} disagree${odd === 1 ? 's' : ''} with it: see the Check column` : ''}`);
     }
   }
 
@@ -1676,7 +1717,7 @@
       + stat(st.max, 'highest') + stat(st.min, 'lowest')
       + `<div class="summary-notes"><p>Hardest questions: ${hardest || '—'}</p>`
       + (m.length ? `<p class="warn">No key for ${m.join(', ')}: nobody can score ${m.length > 1 ? 'these' : 'it'}.</p>` : '')
-      + (absent.length ? `<p>Absent (on the roster, no sheet): ${absent.map(e => esc(`${e.form}${e.cls} ${e.no} ${e.name}`)).join(' · ')}</p>` : '') + '</div>';
+      + (absent.length ? `<p>Absent (on the class list, no sheet): ${absent.map(e => esc(`${e.form}${e.cls} ${e.no} ${e.name}`)).join(' · ')}</p>` : '') + '</div>';
   }
 
   function renderTable() {
@@ -2414,9 +2455,16 @@
   document.getElementById('readIdOmr').addEventListener('change', () => { redrawCalib(); liveRegrade(); });
   document.getElementById('showCorrectCircle').addEventListener('change', () => refreshPreview());
   SETTING_IDS.forEach(id => document.getElementById(id).addEventListener('change', saveSettings));
+  // A pasted or edited class list is used (and remembered) as soon as typing pauses
+  let rosterTimer = null;
+  document.getElementById('rosterText').addEventListener('input', () => {
+    clearTimeout(rosterTimer);
+    rosterTimer = setTimeout(() => { applyRoster(); saveSettings(); }, 400);
+  });
 
   // ---------- START ----------
   loadSettings();
+  updateCheckStep(); // shows what a remembered class list holds
   document.getElementById('threshVal').textContent = document.getElementById('threshSlider').value;
   rebuildKeyInputs();
   redrawCalib();
