@@ -226,7 +226,6 @@
         </div>
         <button class="btn btn-outline" id="btnDetectKey" disabled onclick="rereadKey()">Re-read key</button>
       </div>
-      <p class="hint">Drop the reference here. Its key is read automatically; you can also type it under <em>Alignment &amp; key</em>.</p>
     </section>
 
     <section class="step" id="stepList">
@@ -234,7 +233,7 @@
       <label for="rosterText">Paste your class list</label>
       <textarea id="rosterText" rows="3" aria-describedby="rosterHint" placeholder="Class, Class Num, Student ID, English Name&#10;6K, 23, 23978, Sam Wong"></textarea>
       <p class="step-note" id="rosterNote" role="status" hidden></p>
-      <p class="hint" id="rosterHint">Copy it from Google Sheets or Excel with its heading row. Names are filled in, sheets that disagree with it are marked, and absent students are listed. It is remembered in this browser on this computer; empty the box to forget it.</p>
+      <p class="hint" id="rosterHint">Copy it from Google Sheets or Excel with its heading row. It is remembered in this browser on this computer; empty the box to forget it.</p>
     </section>
 
     <section class="step" id="stepSheets">
@@ -243,7 +242,6 @@
       <input type="file" id="stuInput" accept="image/*,.pdf" multiple />
       <div class="progress" id="stuProgress" hidden><progress max="1" value="0" aria-labelledby="stuProgressText"></progress><span id="stuProgressText"></span></div>
       <p class="step-note" id="sheetsNote" hidden><span id="sheetsCount"></span> · <button class="btn-link" onclick="clearSheets()">Remove all</button></p>
-      <p class="hint">Adding more scans keeps the ones already loaded.</p>
       <p class="hint" id="saveNote">Work is saved in this browser on this computer for 14 days.</p>
     </section>
 
@@ -276,7 +274,7 @@
       <summary>Reading settings</summary>
       <label for="threshSlider">Mark threshold: <span id="threshVal">0.18</span></label>
       <input type="range" id="threshSlider" min="0.08" max="0.40" step="0.01" value="0.18" />
-      <p class="hint">Lower it if faint pencil marks are missed; raise it if smudges count as marks. Results update as you move it.</p>
+      <p class="hint">Lower it if faint pencil marks are missed; raise it if smudges count as marks.</p>
       <label class="check"><input type="checkbox" id="autoDeskew" checked /> Straighten scans using the four corner markers</label>
       <label class="check"><input type="checkbox" id="readIdOmr" checked /> Read Student ID, Class and Class No bubbles</label>
       <label class="check"><input type="checkbox" id="showCorrectCircle" checked /> On marked sheets, circle the right answer when a student is wrong</label>
@@ -335,7 +333,7 @@
           <tbody id="tableBody"></tbody>
         </table>
       </div>
-      <p class="hint">Click a sheet name to review it. Highlighted rows need checking; the Check column says why. Answers and details can be edited here.</p>
+      <p class="hint">Click a sheet name to open it in Review.</p>
     </div>
 
     <div id="tabMarked" role="tabpanel" aria-labelledby="tabBtnMarked" hidden>
@@ -545,7 +543,12 @@
     scheduleSave();
     return true;
   }
-  function setMeta(stu, field, v) { stu[field] = v; stu.manualMeta[field] = v; dupIndex = null; scheduleSave(); }
+  // Class numbers are always two digits: 5 → "05" (whether read, typed or from the class list)
+  const padNo = v => /^\d+$/.test(v) ? String(parseInt(v, 10)).padStart(2, '0') : v;
+  function setMeta(stu, field, v) {
+    if (field === 'no') v = padNo(v);
+    stu[field] = v; stu.manualMeta[field] = v; dupIndex = null; scheduleSave();
+  }
 
   // Sheets grouped by Student ID and by Form+Class+No, built once and reused by every sheetProblems call.
   // Dropped on any edit (setMeta), re-grade (recomputeAllScores) and at the end of each run of code.
@@ -1251,7 +1254,7 @@
       item.form   = read('form');
       item.cls    = read('cls');
       const rawNo = read('clsNo');
-      item.no     = /^\d+$/.test(rawNo) ? String(parseInt(rawNo, 10)) : rawNo;
+      item.no     = padNo(rawNo);
       item.subj   = read('subj');
       item.grp    = read('grp');
     }
@@ -1507,6 +1510,7 @@
         : { id: p[0], form: '', cls: '', no: '', name: p[p.length - 1] });
     for (const e of entries) {
       e.cls = e.cls.toUpperCase();
+      e.no = padNo(e.no);
       const fc = /^(\d+)\s*([A-Z]+)$/.exec(e.cls); // "6H" is Form 6, Class H
       if (fc) { e.form ||= fc[1]; e.cls = fc[2]; }
       if (!e.id) continue;
@@ -1695,7 +1699,7 @@
       const tr = input.closest('tr');
       for (const f of META_FIELDS) {
         const el = tr.querySelector(`[aria-labelledby="th-${f} r${idx}"]`);
-        if (el !== input) el.value = stu[f] || '';
+        el.value = stu[f] || ''; // the edited box too: a typed 5 shows as 05
       }
     }
     // Every row, not just this one: a changed ID or class can start or end a clash with another sheet.
