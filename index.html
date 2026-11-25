@@ -1603,6 +1603,21 @@
     return true;
   }
 
+  // Roster students with no sheet, from the classes the sheets come from. A class needs 3 sheets (fewer if
+  // fewer are loaded), so one misread class bubble does not list a whole class as absent.
+  function absentStudents() {
+    const r = parseRoster();
+    if (!r) return [];
+    const ids = new Set(studentItems.map(s => s.studId));
+    const seats = new Set(studentItems.filter(classKnown).map(classKey));
+    const perClass = Map.groupBy(studentItems, s => `${s.form}${s.cls}`);
+    const min = Math.min(3, studentItems.length);
+    const numeric = (a, b) => a.localeCompare(b, undefined, { numeric: true });
+    return [...r.byId.values()]
+      .filter(e => e.form && e.cls && perClass.get(e.form + e.cls)?.length >= min && !ids.has(e.id) && !seats.has(classKey(e)))
+      .sort((a, b) => numeric(a.form + a.cls, b.form + b.cls) || numeric(a.no, b.no));
+  }
+
   // only: one sheet, after its ID or class was edited
   function applyRoster(silent = false, only = null) {
     const r = parseRoster();
@@ -1621,9 +1636,9 @@
 
   // ---------- RESULTS (TAB 2) ----------
   // Class statistics, shared by the summary panel and the Excel export so the two always agree
-  function classStats(numQ) {
-    const n = studentItems.length;
-    const scores = studentItems.map(s => s.score);
+  function classStats(numQ, list = studentItems) {
+    const n = list.length;
+    const scores = list.map(s => s.score);
     const sorted = scores.toSorted((a, b) => a - b);
     const mean = n ? scores.reduce((a, b) => a + b, 0) / n : 0;
     const median = !n ? 0 : n % 2 ? sorted[n >> 1] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2;
@@ -1632,7 +1647,7 @@
     for (let i = 0; i < numQ; i++) {
       const key = refKey[i] || '';
       const q = { q: i + 1, key, okCnt: 0, A: 0, B: 0, C: 0, D: 0, blank: 0, multi: 0, rank: 0 };
-      studentItems.forEach(s => {
+      list.forEach(s => {
         const a = s.answers[i] || '';
         if (key && a === key) q.okCnt++;
         if (!a) q.blank++;
@@ -1655,11 +1670,13 @@
     const hardest = st.perQ.filter(q => q.key).sort((a, b) => a.okCnt - b.okCnt || a.q - b.q).slice(0, 5)
       .map(q => `Q${q.q} ${Math.round(q.okCnt / st.n * 100)}%`).join(' · ');
     const m = missingKeys();
+    const absent = absentStudents();
     const stat = (v, l) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`;
     el.innerHTML = stat(st.n, 'sheets') + stat(st.mean.toFixed(1), `mean of ${numQ}`) + stat(Number.isInteger(st.median) ? st.median : st.median.toFixed(1), 'median')
       + stat(st.max, 'highest') + stat(st.min, 'lowest')
       + `<div class="summary-notes"><p>Hardest questions: ${hardest || '—'}</p>`
-      + (m.length ? `<p class="warn">No key for ${m.join(', ')}: nobody can score ${m.length > 1 ? 'these' : 'it'}.</p>` : '') + '</div>';
+      + (m.length ? `<p class="warn">No key for ${m.join(', ')}: nobody can score ${m.length > 1 ? 'these' : 'it'}.</p>` : '')
+      + (absent.length ? `<p>Absent (on the roster, no sheet): ${absent.map(e => esc(`${e.form}${e.cls} ${e.no} ${e.name}`)).join(' · ')}</p>` : '') + '</div>';
   }
 
   function renderTable() {
@@ -1745,6 +1762,7 @@
     // Every row, not just this one: a changed ID or class can start or end a clash with another sheet.
     // shortcut: with "Only sheets that need checking" ticked, a sheet that newly clashes appears at the next redraw
     for (const tr of input.closest('tbody').rows) markRowFlag(tr, studentItems[tr.dataset.idx]);
+    renderSummary(getNumQ()); // the absent list may change
     populateStudentDropdown();
     updateCheckStep();
   }
@@ -2091,17 +2109,40 @@
 
   async function exportExcel() {
     try { await loadLib('XLSX'); } catch (err) { return tell('Excel export unavailable', `The page ${err.message}. Reconnect and try again.`); }
+    const wb = XLSX.utils.book_new();
+    for (const [name, rows] of excelSheets()) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), name);
+    XLSX.writeFile(wb, `${exportBaseName()}.xlsx`);
+  }
+
+  // The workbook's tabs as [name, rows]: every sheet in MC Records, the item analysis, then one tab per class
+  // laid out like MC Records with that class's own summary, and its absent students after its sheets.
+  // Sheets keep the display order on every tab.
+  function excelSheets() {
     const numQ = getNumQ();
+    const absent = Map.groupBy(absentStudents(), e => `${e.form}${e.cls}`);
+    const byClass = Map.groupBy(studentItems, s => s.form && s.cls && !/\?/.test(s.form + s.cls)
+      ? `${s.form}${s.cls}`.toUpperCase().replace(/[:\\/?*[\]]/g, '').slice(0, 31) : 'Class unknown'); // Excel's tab-name rules
+    const classTabs = [...byClass.keys()].sort((a, b) => (a === 'Class unknown') - (b === 'Class unknown') || a.localeCompare(b, undefined, { numeric: true }));
+    return [['MC Records', recordRows(studentItems, numQ)], ['Item Analysis', analysisRows(numQ)],
+      ...classTabs.map(c => [c, recordRows(byClass.get(c), numQ, absent.get(c))])];
+  }
+
+  // "CHAN Tai Man 陳大文" → ["CHAN Tai Man", "陳大文"]: the roster joins both names; a typed name may be either
+  const nameParts = name => {
+    const s = String(name || '');
+    return [s.replace(/\p{Script=Han}+/gu, ' ').replace(/\s+/g, ' ').trim(), (s.match(/\p{Script=Han}+/gu) || []).join('')];
+  };
+
+  function recordRows(list, numQ, absent = []) {
     const lowerWrong = document.getElementById('lowercaseWrong').checked;
-    const { n: nStu, mean: meanScore, median: medianScore, sd: sdScore, max: maxScore, min: minScore, perQ: qStats } = classStats(numQ);
+    const { mean: meanScore, median: medianScore, sd: sdScore, max: maxScore, min: minScore, perQ: qStats } = classStats(numQ, list);
 
     const qHeaders = Array.from({ length: numQ }, (_, i) => String(i + 1));
-    const header = ['File', 'Subject', 'Group', 'Stud-id', 'Form', 'Class', 'No', 'Student', 'Score', ...qHeaders];
-    const weightRow = ['Weight', '', '', '', '', '', '', '', numQ, ...Array(numQ).fill(1)];
-    const solRow = [refItem ? refItem.name : 'solution.jpg', '', '', '99999', '0', '', '', 'Solution', numQ, ...refKey.slice(0, numQ)];
+    const header = ['File', 'Stud-id', 'Form', 'Class', 'No', 'English Name', 'Chinese Name', 'Score', ...qHeaders];
+    const solRow = [refItem ? refItem.name : 'solution.jpg', '99999', '0', '', '', 'Solution', '', numQ, ...refKey.slice(0, numQ)];
 
-    const rows = [header, weightRow, solRow];
-    studentItems.forEach(s => {
+    const rows = [header, solRow]; // no Weight row: every question is worth 1 mark
+    list.forEach(s => {
       const formattedAns = [];
       for (let i = 0; i < numQ; i++) {
         const a = s.answers[i] || '';
@@ -2110,25 +2151,34 @@
         else if (lowerWrong && k && a !== k) formattedAns.push(a.toLowerCase());
         else formattedAns.push(a.toUpperCase());
       }
-      rows.push([s.name, s.subj || '0', s.grp || '0', s.studId, s.form, s.cls, s.no, s.studentName, s.score, ...formattedAns]);
+      rows.push([s.name, s.studId, s.form, s.cls, s.no, ...nameParts(s.studentName), s.score, ...formattedAns]);
     });
+    // Not in the summary below: it counts sheets only
+    absent.forEach(e => rows.push(['', e.id, e.form, e.cls, e.no, ...nameParts(e.name), 'Absent']));
 
-    rows.push([]);
-    rows.push(['Summary', '', '', '', '', '', '', 'Mean',            Number(meanScore.toFixed(2)),   ...qStats.map(q => `${q.okPct}%`)]);
-    rows.push(['',        '', '', '', '', '', '', 'Median',          Number(medianScore.toFixed(2)), ...Array(numQ).fill('')]);
-    rows.push(['',        '', '', '', '', '', '', 'Std Dev',         Number(sdScore.toFixed(2)),     ...Array(numQ).fill('')]);
-    rows.push(['',        '', '', '', '', '', '', 'Max / Min',       `${maxScore} / ${minScore}`,    ...Array(numQ).fill('')]);
-    rows.push(['',        '', '', '', '', '', '', 'No. of A',        '', ...qStats.map(q => q.A)]);
-    rows.push(['',        '', '', '', '', '', '', 'No. of B',        '', ...qStats.map(q => q.B)]);
-    rows.push(['',        '', '', '', '', '', '', 'No. of C',        '', ...qStats.map(q => q.C)]);
-    rows.push(['',        '', '', '', '', '', '', 'No. of D',        '', ...qStats.map(q => q.D)]);
-    rows.push(['',        '', '', '', '', '', '', 'Blank',           '', ...qStats.map(q => q.blank)]);
-    rows.push(['',        '', '', '', '', '', '', 'Multiple',        '', ...qStats.map(q => q.multi)]);
-    rows.push(['',        '', '', '', '', '', '', 'Correct Count',   '', ...qStats.map(q => q.okCnt)]);
-    rows.push(['',        '', '', '', '', '', '', 'Correct %',       '', ...qStats.map(q => `${q.okPct}%`)]);
-    rows.push(['',        '', '', '', '', '', '', 'Rank (Correct)',  '', ...qStats.map(q => q.rank)]);
+    // Summary rows: the label sits just left of the Score column
+    const sum = (label, score, perQ = Array(numQ).fill(''), first = '') => [first, '', '', '', '', '', label, score, ...perQ];
+    const per = f => qStats.map(f);
+    rows.push([],
+      sum('Mean', Number(meanScore.toFixed(2)), undefined, 'Summary'), // each question's % is in the Correct % row
+      sum('Median', Number(medianScore.toFixed(2))),
+      sum('Std Dev', Number(sdScore.toFixed(2))),
+      sum('Max / Min', `${maxScore} / ${minScore}`),
+      sum('No. of A', '', per(q => q.A)),
+      sum('No. of B', '', per(q => q.B)),
+      sum('No. of C', '', per(q => q.C)),
+      sum('No. of D', '', per(q => q.D)),
+      sum('Blank', '', per(q => q.blank)),
+      sum('Multiple', '', per(q => q.multi)),
+      sum('Correct Count', '', per(q => q.okCnt)),
+      sum('Correct %', '', per(q => `${q.okPct}%`)),
+      sum('Rank (Correct)', '', per(q => q.rank)));
+    return rows;
+  }
 
-    const analysisRows = [
+  function analysisRows(numQ) {
+    const { n: nStu, mean: meanScore, median: medianScore, sd: sdScore, max: maxScore, min: minScore, perQ: qStats } = classStats(numQ);
+    const rows = [
       ['Overall Score Summary', 'Value'],
       ['Total Students', nStu],
       ['Full Marks', numQ],
@@ -2141,13 +2191,9 @@
       ['Question', 'Key', 'Correct Count', 'Correct %', 'Rank (Correct)', 'No. of A', 'No. of B', 'No. of C', 'No. of D', 'Blank', 'Multiple']
     ];
     qStats.forEach(q => {
-      analysisRows.push([q.q, q.key, q.okCnt, `${q.okPct}%`, q.rank, q.A, q.B, q.C, q.D, q.blank, q.multi]);
+      rows.push([q.q, q.key, q.okCnt, `${q.okPct}%`, q.rank, q.A, q.B, q.C, q.D, q.blank, q.multi]);
     });
-
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'MC Records');
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(analysisRows), 'Item Analysis');
-    XLSX.writeFile(wb, `${exportBaseName()}.xlsx`);
+    return rows;
   }
 
   function buildMarkedFilename(stu, idx) {
